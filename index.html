@@ -26,20 +26,29 @@
           <input id="nodeCount" type="range" min="18" max="110" value="60" />
           <output id="nodeCountValue">60</output>
         </label>
+
         <label class="control">
           <span>连接距离</span>
-          <input id="linkRadius" type="range" min="70" max="260" value="170" />
+          <input id="linkRadius" type="range" min="70" max="300" value="170" />
           <output id="linkRadiusValue">170</output>
         </label>
+
         <label class="control">
-          <span>布朗强度</span>
-          <input id="motion" type="range" min="0" max="100" value="24" />
-          <output id="motionValue">24</output>
+          <span>运动速度</span>
+          <input id="speed" type="range" min="0" max="100" value="35" />
+          <output id="speedValue">35</output>
         </label>
+
         <label class="control">
           <span>光迹</span>
-          <input id="trail" type="range" min="0" max="100" value="14" />
-          <output id="trailValue">14</output>
+          <input id="trail" type="range" min="0" max="100" value="10" />
+          <output id="trailValue">10</output>
+        </label>
+
+        <label class="control color-control">
+          <span>主色</span>
+          <input id="themeColor" type="color" value="#59c9ff" aria-label="调整节点与连线主色" />
+          <output id="colorValue">#59C9FF</output>
         </label>
       </div>
 
@@ -64,7 +73,7 @@
         <div class="status-dot"></div>
         <div>
           <strong id="statusTitle">BROWNIAN FIELD ACTIVE</strong>
-          <span id="statusText">节点独立缓慢随机游走 · 距离小于阈值自动连线</span>
+          <span id="statusText">节点持续随机游走 · 小于连接距离时自动连线</span>
         </div>
       </div>
 
