@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#050505" />
+  <title>Edge Point · 动态图算法可视化</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="brand-block">
+        <div class="brand-mark" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <div>
+          <h1>动态带权无向图</h1>
+          <p>EDGE POINT · GRAPH ALGORITHM VISUALIZER</p>
+        </div>
+      </div>
+
+      <div class="toolbar" aria-label="图参数控制">
+        <label class="control">
+          <span>节点</span>
+          <input id="nodeCount" type="range" min="18" max="90" value="50" />
+          <output id="nodeCountValue">50</output>
+        </label>
+        <label class="control">
+          <span>连边</span>
+          <input id="linkRadius" type="range" min="80" max="230" value="150" />
+          <output id="linkRadiusValue">150</output>
+        </label>
+        <label class="control">
+          <span>运动</span>
+          <input id="motion" type="range" min="0" max="100" value="42" />
+          <output id="motionValue">42</output>
+        </label>
+        <label class="control">
+          <span>拖影</span>
+          <input id="trail" type="range" min="0" max="100" value="18" />
+          <output id="trailValue">18</output>
+        </label>
+      </div>
+
+      <div class="actions">
+        <select id="algorithm" aria-label="选择算法">
+          <option value="bfs">BFS 广度优先</option>
+          <option value="dfs">DFS 深度优先</option>
+          <option value="dijkstra">Dijkstra 最短路</option>
+        </select>
+        <button id="runAlgorithm" class="primary">运行算法</button>
+        <button id="regenerate">重生成</button>
+        <button id="pause" aria-pressed="false">暂停</button>
+      </div>
+    </header>
+
+    <section class="stage" aria-label="动态图可视化画布">
+      <canvas id="graphCanvas"></canvas>
+
+      <div class="status-card">
+        <div class="status-dot"></div>
+        <div>
+          <strong id="statusTitle">SIMULATION ACTIVE</strong>
+          <span id="statusText">拖拽节点 · 点击选择起点 · Shift + 点击选择终点</span>
+        </div>
+      </div>
+
+      <div class="legend" aria-label="图例">
+        <span><i class="legend-node normal"></i> 普通节点</span>
+        <span><i class="legend-node start"></i> 起点</span>
+        <span><i class="legend-node visited"></i> 已访问</span>
+        <span><i class="legend-line"></i> 最短路径</span>
+      </div>
+
+      <div class="metrics" aria-live="polite">
+        <div><span>NODE</span><strong id="metricNodes">50</strong></div>
+        <div><span>EDGE</span><strong id="metricEdges">0</strong></div>
+        <div><span>FPS</span><strong id="metricFps">60</strong></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
