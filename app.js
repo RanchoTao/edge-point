@@ -2,17 +2,19 @@
   'use strict';
 
   const canvas = document.getElementById('graphCanvas');
-  const ctx = canvas.getContext('2d', { alpha: true });
+  const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 
   const els = {
     nodeCount: document.getElementById('nodeCount'),
     nodeCountValue: document.getElementById('nodeCountValue'),
     linkRadius: document.getElementById('linkRadius'),
     linkRadiusValue: document.getElementById('linkRadiusValue'),
-    motion: document.getElementById('motion'),
-    motionValue: document.getElementById('motionValue'),
+    speed: document.getElementById('speed'),
+    speedValue: document.getElementById('speedValue'),
     trail: document.getElementById('trail'),
     trailValue: document.getElementById('trailValue'),
+    themeColor: document.getElementById('themeColor'),
+    colorValue: document.getElementById('colorValue'),
     algorithm: document.getElementById('algorithm'),
     runAlgorithm: document.getElementById('runAlgorithm'),
     regenerate: document.getElementById('regenerate'),
@@ -38,22 +40,16 @@
   let endNode = null;
   let algorithmRunId = 0;
   let algorithmBusy = false;
-  let lastTime = performance.now();
+  let lastFrame = performance.now();
   let lastEdgeRefresh = 0;
   let fpsFrames = 0;
-  let fpsStart = performance.now();
+  let fpsWindowStart = performance.now();
+  let theme = parseHex('#59c9ff');
+  let nodeSprite = null;
+  let selectedSprite = null;
 
   const highlightedEdges = new Set();
   const pathEdges = new Set();
-
-  const palette = {
-    cyan: '#78dcff',
-    cyanSoft: '#5fc9ff',
-    blue: '#3f91ff',
-    blueDeep: '#1f63ff',
-    ice: '#ebfbff',
-    muted: '#8fc6df'
-  };
 
   function rand(min, max) {
     return min + Math.random() * (max - min);
@@ -61,6 +57,22 @@
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
+  }
+
+  function parseHex(hex) {
+    const value = hex.replace('#', '');
+    const normalized = value.length === 3
+      ? value.split('').map(c => c + c).join('')
+      : value.padEnd(6, '0').slice(0, 6);
+    return {
+      r: parseInt(normalized.slice(0, 2), 16),
+      g: parseInt(normalized.slice(2, 4), 16),
+      b: parseInt(normalized.slice(4, 6), 16)
+    };
+  }
+
+  function rgba(alpha, color = theme) {
+    return `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`;
   }
 
   function edgeKey(a, b) {
@@ -80,15 +92,44 @@
     els.statusText.textContent = text;
   }
 
+  function updateTheme(hex) {
+    theme = parseHex(hex);
+    const root = document.documentElement;
+    root.style.setProperty('--accent', hex);
+    root.style.setProperty('--accent-rgb', `${theme.r}, ${theme.g}, ${theme.b}`);
+    els.colorValue.textContent = hex.toUpperCase();
+    nodeSprite = makeGlowSprite(false);
+    selectedSprite = makeGlowSprite(true);
+  }
+
+  function makeGlowSprite(selected) {
+    const size = selected ? 84 : 60;
+    const sprite = document.createElement('canvas');
+    sprite.width = size;
+    sprite.height = size;
+    const sctx = sprite.getContext('2d');
+    const c = size / 2;
+    const gradient = sctx.createRadialGradient(c, c, 0, c, c, c);
+    gradient.addColorStop(0, 'rgba(255,255,255,.98)');
+    gradient.addColorStop(.08, rgba(.98));
+    gradient.addColorStop(.22, rgba(selected ? .68 : .46));
+    gradient.addColorStop(.5, rgba(selected ? .2 : .11));
+    gradient.addColorStop(1, rgba(0));
+    sctx.fillStyle = gradient;
+    sctx.fillRect(0, 0, size, size);
+    return sprite;
+  }
+
   function resize() {
     const rect = canvas.getBoundingClientRect();
     width = Math.max(1, rect.width);
     height = Math.max(1, rect.height);
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    dpr = Math.min(window.devicePixelRatio || 1, 1.6);
     canvas.width = Math.floor(width * dpr);
     canvas.height = Math.floor(height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#020914';
+    ctx.fillRect(0, 0, width, height);
 
     const pad = 34;
     for (const node of nodes) {
@@ -98,25 +139,29 @@
   }
 
   function createNodes(count) {
-    const pad = 62;
-    nodes = Array.from({ length: count }, (_, id) => ({
-      id,
-      x: rand(pad, Math.max(pad + 1, width - pad)),
-      y: rand(pad, Math.max(pad + 1, height - pad)),
-      vx: rand(-0.08, 0.08),
-      vy: rand(-0.08, 0.08),
-      degree: 0,
-      radius: rand(1.8, 2.6),
-      state: 'normal',
-      visitedOrder: -1,
-      pinned: false,
-      phase: rand(0, Math.PI * 2)
-    }));
+    const pad = 56;
+    const initialSpeed = 8 + Number(els.speed.value) * 0.22;
+    nodes = Array.from({ length: count }, (_, id) => {
+      const angle = rand(0, Math.PI * 2);
+      const magnitude = rand(.15, .55) * initialSpeed;
+      return {
+        id,
+        x: rand(pad, Math.max(pad + 1, width - pad)),
+        y: rand(pad, Math.max(pad + 1, height - pad)),
+        vx: Math.cos(angle) * magnitude,
+        vy: Math.sin(angle) * magnitude,
+        degree: 0,
+        state: 'normal',
+        visitedOrder: -1,
+        pinned: false,
+        phase: rand(0, Math.PI * 2)
+      };
+    });
   }
 
   function refreshEdges(force = false) {
     const now = performance.now();
-    if (!force && now - lastEdgeRefresh < 55) return;
+    if (!force && now - lastEdgeRefresh < 80) return;
     lastEdgeRefresh = now;
 
     const radius = Number(els.linkRadius.value);
@@ -147,9 +192,7 @@
 
     edges = nextEdges;
     adjacency = nextAdj;
-    nodes.forEach((node, i) => {
-      node.degree = degree[i];
-    });
+    nodes.forEach((node, i) => { node.degree = degree[i]; });
     els.metricEdges.textContent = String(edges.length);
   }
 
@@ -163,7 +206,7 @@
       node.visitedOrder = -1;
     }
     if (startNode != null && nodes[startNode]) nodes[startNode].state = 'start';
-    if (endNode != null && nodes[endNode]) nodes[endNode].state = 'end';
+    if (endNode != null && nodes[endNode] && endNode !== startNode) nodes[endNode].state = 'end';
   }
 
   function regenerate() {
@@ -176,26 +219,32 @@
     if (endNode !== startNode) nodes[endNode].state = 'end';
     refreshEdges(true);
     els.metricNodes.textContent = String(count);
-    setStatus('BROWNIAN FIELD ACTIVE', '节点独立缓慢随机游走 · 距离小于阈值自动连线');
+    setStatus('BROWNIAN FIELD ACTIVE', '节点持续随机游走 · 小于连接距离时自动连线');
   }
 
   function physicsStep(dt) {
     if (paused) return;
 
-    const activity = Number(els.motion.value) / 100;
-    const frameScale = clamp(dt / 16.6667, 0.2, 2.2);
-    const noise = activity * 0.032;
-    const damping = Math.pow(0.986, frameScale);
-    const maxSpeed = 0.10 + activity * 0.52;
-    const pad = 34;
+    const speedSetting = Number(els.speed.value) / 100;
+    if (speedSetting <= 0) {
+      for (const node of nodes) {
+        node.vx *= .9;
+        node.vy *= .9;
+      }
+      return;
+    }
+
+    const maxSpeed = 18 + speedSetting * 118;
+    const noiseAccel = 48 + speedSetting * 230;
+    const damping = Math.exp(-(1.45 - speedSetting * .35) * dt);
+    const pad = 30;
+    const noiseScale = Math.sqrt(Math.max(dt, 1 / 240));
 
     for (const node of nodes) {
       if (node.pinned) continue;
 
-      // Ornstein-Uhlenbeck style Brownian drift: white-noise impulses + gentle damping.
-      // This keeps the motion random, slow and locally smooth instead of ballistic.
-      node.vx = node.vx * damping + rand(-noise, noise) * Math.sqrt(frameScale);
-      node.vy = node.vy * damping + rand(-noise, noise) * Math.sqrt(frameScale);
+      node.vx = node.vx * damping + rand(-1, 1) * noiseAccel * noiseScale;
+      node.vy = node.vy * damping + rand(-1, 1) * noiseAccel * noiseScale;
 
       const speed = Math.hypot(node.vx, node.vy);
       if (speed > maxSpeed) {
@@ -203,30 +252,37 @@
         node.vy = (node.vy / speed) * maxSpeed;
       }
 
-      node.x += node.vx * frameScale;
-      node.y += node.vy * frameScale;
+      node.x += node.vx * dt;
+      node.y += node.vy * dt;
 
       if (node.x < pad) {
         node.x = pad;
-        node.vx = Math.abs(node.vx) * 0.72;
+        node.vx = Math.abs(node.vx) * .72;
       } else if (node.x > width - pad) {
         node.x = width - pad;
-        node.vx = -Math.abs(node.vx) * 0.72;
+        node.vx = -Math.abs(node.vx) * .72;
       }
 
       if (node.y < pad) {
         node.y = pad;
-        node.vy = Math.abs(node.vy) * 0.72;
+        node.vy = Math.abs(node.vy) * .72;
       } else if (node.y > height - pad) {
         node.y = height - pad;
-        node.vy = -Math.abs(node.vy) * 0.72;
+        node.vy = -Math.abs(node.vy) * .72;
       }
     }
   }
 
-  function drawBaseEdges() {
+  function clearFrame() {
+    const trail = Number(els.trail.value) / 100;
+    const alpha = trail <= .01 ? 1 : clamp(.42 - trail * .36, .055, .42);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `rgba(2, 9, 20, ${alpha})`;
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  function drawEdges() {
     ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
     ctx.lineCap = 'round';
 
     for (const edge of edges) {
@@ -237,66 +293,41 @@
       const isStep = highlightedEdges.has(key);
       const isHover = hovered != null && (edge.a === hovered || edge.b === hovered);
 
-      let alpha = 0.035 + edge.proximity * 0.13;
-      let lineWidth = 0.55 + edge.proximity * 0.35;
-
-      if (isHover) {
-        alpha = 0.34 + edge.proximity * 0.22;
-        lineWidth = 1.05;
-      }
-      if (isStep) {
-        alpha = 0.72;
-        lineWidth = 1.4;
-      }
-      if (isPath) {
-        alpha = 0.96;
-        lineWidth = 1.9;
-      }
+      let alpha = .028 + edge.proximity * .18;
+      let lineWidth = .48 + edge.proximity * .48;
+      if (isHover) { alpha = .45; lineWidth = 1.05; }
+      if (isStep) { alpha = .68; lineWidth = 1.35; }
+      if (isPath) { alpha = .94; lineWidth = 1.8; }
 
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
-      ctx.strokeStyle = isPath
-        ? `rgba(118, 220, 255, ${alpha})`
-        : `rgba(61, 148, 255, ${alpha})`;
+      ctx.strokeStyle = rgba(alpha);
       ctx.lineWidth = lineWidth;
-
-      if (isPath || isStep) {
-        ctx.shadowColor = isPath ? 'rgba(95, 211, 255, .9)' : 'rgba(58, 143, 255, .72)';
-        ctx.shadowBlur = isPath ? 13 : 8;
-      }
-
       ctx.stroke();
-      ctx.shadowBlur = 0;
     }
 
     ctx.restore();
   }
 
-  function drawAlgorithmOverlays() {
-    const visible = new Set(edges.map(e => edgeKey(e.a, e.b)));
-    const overlays = new Set([...highlightedEdges, ...pathEdges]);
-
+  function drawAlgorithmGhostEdges() {
+    const visible = new Set(edges.map(edge => edgeKey(edge.a, edge.b)));
     ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
     ctx.lineCap = 'round';
 
-    for (const key of overlays) {
+    for (const key of new Set([...highlightedEdges, ...pathEdges])) {
       if (visible.has(key)) continue;
       const [aId, bId] = parseEdgeKey(key);
       const a = nodes[aId];
       const b = nodes[bId];
       if (!a || !b) continue;
-      const isPath = pathEdges.has(key);
+      const path = pathEdges.has(key);
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
-      ctx.strokeStyle = isPath ? 'rgba(118,220,255,.86)' : 'rgba(68,142,255,.56)';
-      ctx.lineWidth = isPath ? 1.8 : 1.2;
-      ctx.shadowColor = isPath ? 'rgba(100,220,255,.9)' : 'rgba(53,133,255,.7)';
-      ctx.shadowBlur = isPath ? 12 : 7;
+      ctx.strokeStyle = rgba(path ? .76 : .46);
+      ctx.lineWidth = path ? 1.7 : 1.15;
       ctx.stroke();
-      ctx.shadowBlur = 0;
     }
 
     const now = performance.now();
@@ -305,116 +336,176 @@
       const a = nodes[aId];
       const b = nodes[bId];
       if (!a || !b) continue;
-      const phase = ((now / 1100) + (aId + bId) * 0.071) % 1;
+      const phase = ((now / 1050) + (aId + bId) * .071) % 1;
       const px = a.x + (b.x - a.x) * phase;
       const py = a.y + (b.y - a.y) * phase;
       ctx.beginPath();
       ctx.arc(px, py, 1.8, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(220, 251, 255, .98)';
-      ctx.shadowColor = 'rgba(88, 211, 255, 1)';
-      ctx.shadowBlur = 15;
+      ctx.fillStyle = '#effdff';
       ctx.fill();
-      ctx.shadowBlur = 0;
     }
 
     ctx.restore();
   }
 
-  function drawNode(node, now) {
-    const selected = node.id === startNode || node.id === endNode;
-    const hoveredNode = node.id === hovered;
-    const visited = node.state === 'visited';
-    const active = node.state === 'active';
-    const isStart = node.id === startNode;
-    const isEnd = node.id === endNode;
+  function drawNodes() {
+    for (const node of nodes) {
+      const selected = node.id === startNode || node.id === endNode;
+      const active = node.state === 'active';
+      const hoveredNode = node.id === hovered;
+      const visited = node.state === 'visited';
+      const sprite = selected || active || hoveredNode ? selectedSprite : nodeSprite;
+      const sizeBase = selected || active || hoveredNode ? 38 : 26;
+      const size = sizeBase + Math.min(8, Math.sqrt(node.degree) * 1.15);
 
-    let core = palette.cyan;
-    let glow = 'rgba(70, 184, 255, .88)';
-    let radius = 2.0 + Math.min(1.7, Math.sqrt(node.degree) * 0.16);
+      ctx.globalAlpha = visited ? .82 : 1;
+      ctx.drawImage(sprite, node.x - size / 2, node.y - size / 2, size, size);
 
-    if (visited) {
-      core = '#66a8ff';
-      glow = 'rgba(55, 111, 255, .9)';
-    }
-    if (active) {
-      core = '#e9fdff';
-      glow = 'rgba(89, 225, 255, 1)';
-      radius += 1.3;
-    }
-    if (isEnd) {
-      core = '#95b7ff';
-      glow = 'rgba(73, 113, 255, 1)';
-      radius += 1.0;
-    }
-    if (isStart) {
-      core = '#f0fdff';
-      glow = 'rgba(75, 202, 255, 1)';
-      radius += 1.4;
-    }
-    if (hoveredNode) radius += 1.8;
+      const coreRadius = selected || active || hoveredNode ? 2.5 : 1.65;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, coreRadius, 0, Math.PI * 2);
+      ctx.fillStyle = selected || active ? '#f4feff' : rgba(.98);
+      ctx.fill();
+      ctx.globalAlpha = 1;
 
-    const breathe = 0.88 + Math.sin(now * 0.0018 + node.phase) * 0.12;
-
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, radius * (3.3 + breathe), 0, Math.PI * 2);
-    ctx.fillStyle = isStart || isEnd || active
-      ? 'rgba(84, 192, 255, .075)'
-      : 'rgba(46, 137, 255, .035)';
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = core;
-    ctx.shadowColor = glow;
-    ctx.shadowBlur = selected || hoveredNode || active ? 24 : 14;
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.arc(node.x - radius * .25, node.y - radius * .25, Math.max(.65, radius * .34), 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255,255,255,.94)';
-    ctx.shadowBlur = 7;
-    ctx.fill();
-
-    ctx.restore();
-
-    const showLabel = nodes.length <= 80 || selected || hoveredNode || visited || active;
-    if (showLabel) {
-      ctx.save();
-      ctx.font = selected || hoveredNode ? '600 9px Inter, system-ui, sans-serif' : '500 8px Inter, system-ui, sans-serif';
-      ctx.fillStyle = selected || hoveredNode
-        ? 'rgba(211, 245, 255, .86)'
-        : 'rgba(143, 201, 230, .42)';
-      ctx.shadowColor = 'rgba(32, 126, 255, .45)';
-      ctx.shadowBlur = selected || hoveredNode ? 7 : 0;
-      const suffix = node.visitedOrder >= 0 ? ` · ${node.visitedOrder}` : '';
-      ctx.fillText(`${node.id}${suffix}`, node.x + radius + 5, node.y - radius - 3);
-      ctx.restore();
+      const showLabel = nodes.length <= 72 || selected || hoveredNode || active || visited;
+      if (showLabel) {
+        ctx.font = selected || hoveredNode ? '600 9px Inter, system-ui, sans-serif' : '500 8px Inter, system-ui, sans-serif';
+        ctx.fillStyle = selected || hoveredNode ? 'rgba(226,249,255,.88)' : 'rgba(157,205,230,.48)';
+        const suffix = node.visitedOrder >= 0 ? ` · ${node.visitedOrder}` : '';
+        ctx.fillText(`${node.id}${suffix}`, node.x + 6, node.y - 5);
+      }
     }
   }
 
   function draw() {
-    const trail = Number(els.trail.value) / 100;
-    const fadeAlpha = trail <= 0.01 ? 1 : clamp(0.30 - trail * 0.245, 0.055, 0.30);
-
-    ctx.save();
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = `rgba(1, 7, 16, ${fadeAlpha})`;
-    ctx.fillRect(0, 0, width, height);
-    ctx.restore();
-
-    drawBaseEdges();
-    drawAlgorithmOverlays();
-
-    const now = performance.now();
-    for (const node of nodes) drawNode(node, now);
+    clearFrame();
+    drawEdges();
+    drawAlgorithmGhostEdges();
+    drawNodes();
   }
 
-  function nearestNode(x, y, radius = 16) {
+  function snapshotAdjacency() {
+    return adjacency.map(list => list.map(item => ({ ...item })));
+  }
+
+  function setNodeState(id, state) {
+    const node = nodes[id];
+    if (!node) return;
+    if (id === startNode) node.state = 'start';
+    else if (id === endNode) node.state = 'end';
+    else node.state = state;
+  }
+
+  async function animateTraversal(mode, graph, runId) {
+    const start = startNode ?? 0;
+    const target = endNode;
+    const seen = new Set([start]);
+    const parent = Array(nodes.length).fill(-1);
+    const frontier = [start];
+    let order = 0;
+
+    while (frontier.length && runId === algorithmRunId) {
+      const current = mode === 'bfs' ? frontier.shift() : frontier.pop();
+      nodes[current].visitedOrder = order++;
+      setNodeState(current, 'active');
+      await sleep(95);
+      if (runId !== algorithmRunId) return;
+
+      if (current === target) break;
+
+      const neighbours = [...graph[current]];
+      if (mode === 'dfs') neighbours.reverse();
+      for (const { to } of neighbours) {
+        if (seen.has(to)) continue;
+        seen.add(to);
+        parent[to] = current;
+        highlightedEdges.add(edgeKey(current, to));
+        frontier.push(to);
+      }
+
+      setNodeState(current, 'visited');
+      await sleep(35);
+    }
+
+    if (target != null && seen.has(target)) buildPath(parent, start, target);
+  }
+
+  async function animateDijkstra(graph, runId) {
+    const start = startNode ?? 0;
+    const target = endNode;
+    const dist = Array(nodes.length).fill(Infinity);
+    const parent = Array(nodes.length).fill(-1);
+    const used = new Set();
+    dist[start] = 0;
+    let order = 0;
+
+    while (runId === algorithmRunId) {
+      let current = -1;
+      let best = Infinity;
+      for (let i = 0; i < nodes.length; i++) {
+        if (!used.has(i) && dist[i] < best) {
+          best = dist[i];
+          current = i;
+        }
+      }
+      if (current < 0) break;
+
+      used.add(current);
+      nodes[current].visitedOrder = order++;
+      setNodeState(current, 'active');
+      await sleep(95);
+      if (runId !== algorithmRunId) return;
+      if (current === target) break;
+
+      for (const { to, weight } of graph[current]) {
+        if (dist[current] + weight < dist[to]) {
+          dist[to] = dist[current] + weight;
+          parent[to] = current;
+          highlightedEdges.add(edgeKey(current, to));
+        }
+      }
+      setNodeState(current, 'visited');
+      await sleep(30);
+    }
+
+    if (target != null && Number.isFinite(dist[target])) buildPath(parent, start, target);
+  }
+
+  function buildPath(parent, start, target) {
+    let current = target;
+    let guard = 0;
+    while (current !== start && current >= 0 && guard++ < nodes.length + 1) {
+      const p = parent[current];
+      if (p < 0) return;
+      pathEdges.add(edgeKey(p, current));
+      current = p;
+    }
+  }
+
+  async function runAlgorithm() {
+    if (algorithmBusy || !nodes.length) return;
+    resetAlgorithmVisuals();
+    algorithmBusy = true;
+    const runId = algorithmRunId;
+    const graph = snapshotAdjacency();
+    const mode = els.algorithm.value;
+    setStatus(`${mode.toUpperCase()} RUNNING`, '算法基于当前距离图快照运行，节点仍可继续运动');
+
+    try {
+      if (mode === 'dijkstra') await animateDijkstra(graph, runId);
+      else await animateTraversal(mode, graph, runId);
+    } finally {
+      if (runId === algorithmRunId) {
+        algorithmBusy = false;
+        setStatus('SIMULATION ACTIVE', pathEdges.size ? '算法完成 · 高亮路径保持显示' : '算法完成 · 当前图中可能不存在可达路径');
+      }
+    }
+  }
+
+  function nearestNode(x, y, maxDistance = 18) {
     let best = null;
-    let bestD = radius;
+    let bestD = maxDistance;
     for (const node of nodes) {
       const d = Math.hypot(node.x - x, node.y - y);
       if (d < bestD) {
@@ -427,217 +518,23 @@
 
   function pointerPosition(event) {
     const rect = canvas.getBoundingClientRect();
-    return {
-      x: event.clientX - rect.left,
-      y: event.clientY - rect.top
-    };
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   }
 
-  function applySelection(nodeId, chooseEnd) {
-    if (nodeId == null || !nodes[nodeId]) return;
-    resetAlgorithmVisuals();
-
-    if (chooseEnd) {
-      endNode = nodeId;
-    } else {
-      startNode = nodeId;
+  canvas.addEventListener('pointerdown', event => {
+    const p = pointerPosition(event);
+    const id = nearestNode(p.x, p.y, 22);
+    pointerDown = { x: p.x, y: p.y, id, shift: event.shiftKey };
+    if (id != null) {
+      dragging = id;
+      nodes[id].pinned = true;
+      canvas.setPointerCapture(event.pointerId);
     }
-
-    for (const node of nodes) node.state = 'normal';
-    if (startNode != null && nodes[startNode]) nodes[startNode].state = 'start';
-    if (endNode != null && nodes[endNode] && endNode !== startNode) nodes[endNode].state = 'end';
-
-    setStatus(
-      'SELECTION UPDATED',
-      `起点 ${startNode ?? '—'} · 终点 ${endNode ?? '—'} · Shift + 点击选择终点`
-    );
-  }
-
-  function snapshotAdjacency() {
-    refreshEdges(true);
-    return adjacency.map(list => list.map(item => ({ ...item })));
-  }
-
-  async function animateTraversal(kind) {
-    if (startNode == null || !nodes[startNode]) return;
-
-    const graph = snapshotAdjacency();
-    const runId = ++algorithmRunId;
-    algorithmBusy = true;
-    highlightedEdges.clear();
-    pathEdges.clear();
-    for (const node of nodes) {
-      node.state = 'normal';
-      node.visitedOrder = -1;
-    }
-    nodes[startNode].state = 'start';
-    if (endNode != null && endNode !== startNode) nodes[endNode].state = 'end';
-
-    const visited = new Set();
-    const previous = Array(nodes.length).fill(null);
-    const frontier = [startNode];
-    let order = 0;
-
-    setStatus(kind === 'bfs' ? 'BFS RUNNING' : 'DFS RUNNING', '以当前距离邻接关系为快照执行搜索');
-
-    while (frontier.length && runId === algorithmRunId) {
-      const current = kind === 'bfs' ? frontier.shift() : frontier.pop();
-      if (visited.has(current)) continue;
-      visited.add(current);
-
-      const node = nodes[current];
-      if (!node) continue;
-      node.state = 'active';
-      node.visitedOrder = order++;
-
-      if (previous[current] != null) highlightedEdges.add(edgeKey(current, previous[current]));
-      await sleep(70);
-      if (runId !== algorithmRunId) return;
-
-      node.state = current === startNode ? 'start' : current === endNode ? 'end' : 'visited';
-      if (current === endNode) break;
-
-      const neighbours = [...graph[current]];
-      if (kind === 'dfs') neighbours.reverse();
-      for (const next of neighbours) {
-        if (visited.has(next.to)) continue;
-        if (previous[next.to] == null && next.to !== startNode) previous[next.to] = current;
-        frontier.push(next.to);
-      }
-    }
-
-    finishTraversal(previous, runId, kind.toUpperCase());
-  }
-
-  async function animateDijkstra() {
-    if (startNode == null || !nodes[startNode]) return;
-
-    const graph = snapshotAdjacency();
-    const runId = ++algorithmRunId;
-    algorithmBusy = true;
-    highlightedEdges.clear();
-    pathEdges.clear();
-
-    for (const node of nodes) {
-      node.state = 'normal';
-      node.visitedOrder = -1;
-    }
-    nodes[startNode].state = 'start';
-    if (endNode != null && endNode !== startNode) nodes[endNode].state = 'end';
-
-    const dist = Array(nodes.length).fill(Infinity);
-    const previous = Array(nodes.length).fill(null);
-    const used = new Set();
-    dist[startNode] = 0;
-    let order = 0;
-
-    setStatus('DIJKSTRA RUNNING', '边权采用运行瞬间的节点欧氏距离');
-
-    while (used.size < nodes.length && runId === algorithmRunId) {
-      let current = null;
-      let best = Infinity;
-      for (let i = 0; i < nodes.length; i++) {
-        if (!used.has(i) && dist[i] < best) {
-          best = dist[i];
-          current = i;
-        }
-      }
-      if (current == null) break;
-
-      used.add(current);
-      nodes[current].state = 'active';
-      nodes[current].visitedOrder = order++;
-      if (previous[current] != null) highlightedEdges.add(edgeKey(current, previous[current]));
-
-      await sleep(72);
-      if (runId !== algorithmRunId) return;
-
-      nodes[current].state = current === startNode ? 'start' : current === endNode ? 'end' : 'visited';
-      if (current === endNode) break;
-
-      for (const next of graph[current]) {
-        if (used.has(next.to)) continue;
-        const candidate = dist[current] + next.weight;
-        if (candidate < dist[next.to]) {
-          dist[next.to] = candidate;
-          previous[next.to] = current;
-        }
-      }
-    }
-
-    finishTraversal(previous, runId, 'DIJKSTRA', Number.isFinite(dist[endNode]) ? dist[endNode] : null);
-  }
-
-  function finishTraversal(previous, runId, label, distance = null) {
-    if (runId !== algorithmRunId) return;
-    pathEdges.clear();
-
-    let pathLength = 0;
-    if (endNode != null && endNode !== startNode) {
-      let current = endNode;
-      const guard = new Set();
-      while (current != null && current !== startNode && !guard.has(current)) {
-        guard.add(current);
-        const prev = previous[current];
-        if (prev == null) break;
-        pathEdges.add(edgeKey(current, prev));
-        pathLength++;
-        current = prev;
-      }
-    }
-
-    algorithmBusy = false;
-    if (endNode === startNode || pathEdges.size > 0) {
-      const distanceText = distance == null ? `${pathLength} 条边` : `距离 ${Math.round(distance)}`;
-      setStatus(`${label} COMPLETE`, `路径已锁定 · ${distanceText} · 节点仍继续布朗运动`);
-    } else {
-      setStatus(`${label} COMPLETE`, '当前邻接快照中起点与终点不连通');
-    }
-  }
-
-  async function runSelectedAlgorithm() {
-    if (algorithmBusy) resetAlgorithmVisuals();
-    const kind = els.algorithm.value;
-    if (kind === 'dijkstra') await animateDijkstra();
-    else await animateTraversal(kind);
-  }
-
-  function syncControls() {
-    els.nodeCountValue.textContent = els.nodeCount.value;
-    els.linkRadiusValue.textContent = els.linkRadius.value;
-    els.motionValue.textContent = els.motion.value;
-    els.trailValue.textContent = els.trail.value;
-  }
-
-  els.nodeCount.addEventListener('input', () => {
-    syncControls();
-  });
-
-  els.nodeCount.addEventListener('change', regenerate);
-
-  els.linkRadius.addEventListener('input', () => {
-    syncControls();
-    refreshEdges(true);
-  });
-
-  els.motion.addEventListener('input', syncControls);
-  els.trail.addEventListener('input', syncControls);
-  els.regenerate.addEventListener('click', regenerate);
-  els.runAlgorithm.addEventListener('click', runSelectedAlgorithm);
-
-  els.pause.addEventListener('click', () => {
-    paused = !paused;
-    els.pause.textContent = paused ? '继续' : '暂停';
-    els.pause.setAttribute('aria-pressed', String(paused));
-    setStatus(
-      paused ? 'FIELD PAUSED' : 'BROWNIAN FIELD ACTIVE',
-      paused ? '节点位置已冻结，距离邻接关系保持当前状态' : '节点恢复独立缓慢随机游走'
-    );
   });
 
   canvas.addEventListener('pointermove', event => {
     const p = pointerPosition(event);
-
+    hovered = nearestNode(p.x, p.y, 18);
     if (dragging != null && nodes[dragging]) {
       const node = nodes[dragging];
       node.x = clamp(p.x, 28, width - 28);
@@ -645,48 +542,63 @@
       node.vx = 0;
       node.vy = 0;
       refreshEdges(true);
-      return;
-    }
-
-    hovered = nearestNode(p.x, p.y, 18);
-    canvas.style.cursor = hovered == null ? 'crosshair' : 'grab';
-  });
-
-  canvas.addEventListener('pointerdown', event => {
-    const p = pointerPosition(event);
-    const id = nearestNode(p.x, p.y, 18);
-    pointerDown = { x: p.x, y: p.y, id, shift: event.shiftKey };
-    if (id != null) {
-      dragging = id;
-      nodes[id].pinned = true;
-      canvas.setPointerCapture(event.pointerId);
-      canvas.style.cursor = 'grabbing';
     }
   });
 
   canvas.addEventListener('pointerup', event => {
     const p = pointerPosition(event);
-    const moved = pointerDown ? Math.hypot(p.x - pointerDown.x, p.y - pointerDown.y) : Infinity;
-    const id = dragging;
-
-    if (id != null && nodes[id]) {
-      nodes[id].pinned = false;
-      nodes[id].vx = rand(-0.05, 0.05);
-      nodes[id].vy = rand(-0.05, 0.05);
-    }
-
+    const released = dragging;
+    if (released != null && nodes[released]) nodes[released].pinned = false;
     dragging = null;
-    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
-    canvas.style.cursor = hovered == null ? 'crosshair' : 'grab';
 
-    if (pointerDown && pointerDown.id != null && moved < 6) {
-      applySelection(pointerDown.id, event.shiftKey || pointerDown.shift);
+    if (pointerDown && pointerDown.id != null) {
+      const moved = Math.hypot(p.x - pointerDown.x, p.y - pointerDown.y);
+      if (moved < 5) {
+        resetAlgorithmVisuals();
+        if (pointerDown.shift) endNode = pointerDown.id;
+        else startNode = pointerDown.id;
+        if (startNode != null && nodes[startNode]) nodes[startNode].state = 'start';
+        if (endNode != null && nodes[endNode] && endNode !== startNode) nodes[endNode].state = 'end';
+        setStatus('SELECTION UPDATED', `起点 ${startNode ?? '—'} · 终点 ${endNode ?? '—'}`);
+      }
     }
     pointerDown = null;
   });
 
   canvas.addEventListener('pointerleave', () => {
-    if (dragging == null) hovered = null;
+    hovered = null;
+    if (dragging != null && nodes[dragging]) nodes[dragging].pinned = false;
+    dragging = null;
+  });
+
+  els.nodeCount.addEventListener('input', () => {
+    els.nodeCountValue.textContent = els.nodeCount.value;
+  });
+  els.nodeCount.addEventListener('change', regenerate);
+
+  els.linkRadius.addEventListener('input', () => {
+    els.linkRadiusValue.textContent = els.linkRadius.value;
+    refreshEdges(true);
+  });
+
+  els.speed.addEventListener('input', () => {
+    els.speedValue.textContent = els.speed.value;
+    const value = Number(els.speed.value);
+    setStatus(value === 0 ? 'MOTION PAUSED' : 'BROWNIAN FIELD ACTIVE', value === 0 ? '运动速度为 0' : `运动速度 ${value} · 节点实时随机游走`);
+  });
+
+  els.trail.addEventListener('input', () => {
+    els.trailValue.textContent = els.trail.value;
+  });
+
+  els.themeColor.addEventListener('input', () => updateTheme(els.themeColor.value));
+  els.runAlgorithm.addEventListener('click', runAlgorithm);
+  els.regenerate.addEventListener('click', regenerate);
+  els.pause.addEventListener('click', () => {
+    paused = !paused;
+    els.pause.textContent = paused ? '继续' : '暂停';
+    els.pause.setAttribute('aria-pressed', String(paused));
+    setStatus(paused ? 'SIMULATION PAUSED' : 'BROWNIAN FIELD ACTIVE', paused ? '节点运动与距离图更新已暂停' : '节点持续随机游走 · 小于连接距离时自动连线');
   });
 
   window.addEventListener('resize', () => {
@@ -695,25 +607,30 @@
   });
 
   function frame(now) {
-    const dt = Math.min(34, now - lastTime || 16.67);
-    lastTime = now;
+    const dt = clamp((now - lastFrame) / 1000, 1 / 240, .05);
+    lastFrame = now;
 
     physicsStep(dt);
-    refreshEdges(false);
+    if (!paused) refreshEdges();
     draw();
 
     fpsFrames++;
-    if (now - fpsStart >= 500) {
-      const fps = Math.round((fpsFrames * 1000) / (now - fpsStart));
+    const elapsed = now - fpsWindowStart;
+    if (elapsed >= 700) {
+      const fps = Math.round((fpsFrames * 1000) / elapsed);
       els.metricFps.textContent = String(fps);
       fpsFrames = 0;
-      fpsStart = now;
+      fpsWindowStart = now;
     }
 
     requestAnimationFrame(frame);
   }
 
-  syncControls();
+  updateTheme(els.themeColor.value);
+  els.nodeCountValue.textContent = els.nodeCount.value;
+  els.linkRadiusValue.textContent = els.linkRadius.value;
+  els.speedValue.textContent = els.speed.value;
+  els.trailValue.textContent = els.trail.value;
   resize();
   regenerate();
   requestAnimationFrame(frame);
