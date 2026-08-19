@@ -3,43 +3,43 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#050505" />
-  <title>Edge Point · 动态图算法可视化</title>
+  <meta name="theme-color" content="#03111f" />
+  <title>Edge Point · 布朗邻接网络</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <main class="app-shell">
-    <header class="topbar">
+    <header class="topbar glass-panel">
       <div class="brand-block">
         <div class="brand-mark" aria-hidden="true">
           <span></span><span></span><span></span>
         </div>
         <div>
-          <h1>动态带权无向图</h1>
-          <p>EDGE POINT · GRAPH ALGORITHM VISUALIZER</p>
+          <h1>布朗邻接网络</h1>
+          <p>EDGE POINT · BROWNIAN PROXIMITY GRAPH</p>
         </div>
       </div>
 
       <div class="toolbar" aria-label="图参数控制">
         <label class="control">
           <span>节点</span>
-          <input id="nodeCount" type="range" min="18" max="90" value="50" />
-          <output id="nodeCountValue">50</output>
+          <input id="nodeCount" type="range" min="18" max="110" value="60" />
+          <output id="nodeCountValue">60</output>
         </label>
         <label class="control">
-          <span>连边</span>
-          <input id="linkRadius" type="range" min="80" max="230" value="150" />
-          <output id="linkRadiusValue">150</output>
+          <span>连接距离</span>
+          <input id="linkRadius" type="range" min="70" max="260" value="170" />
+          <output id="linkRadiusValue">170</output>
         </label>
         <label class="control">
-          <span>运动</span>
-          <input id="motion" type="range" min="0" max="100" value="42" />
-          <output id="motionValue">42</output>
+          <span>布朗强度</span>
+          <input id="motion" type="range" min="0" max="100" value="24" />
+          <output id="motionValue">24</output>
         </label>
         <label class="control">
-          <span>拖影</span>
-          <input id="trail" type="range" min="0" max="100" value="18" />
-          <output id="trailValue">18</output>
+          <span>光迹</span>
+          <input id="trail" type="range" min="0" max="100" value="14" />
+          <output id="trailValue">14</output>
         </label>
       </div>
 
@@ -55,26 +55,28 @@
       </div>
     </header>
 
-    <section class="stage" aria-label="动态图可视化画布">
+    <section class="stage" aria-label="布朗运动动态图可视化画布">
       <canvas id="graphCanvas"></canvas>
+      <div class="ambient ambient-a"></div>
+      <div class="ambient ambient-b"></div>
 
-      <div class="status-card">
+      <div class="status-card glass-panel">
         <div class="status-dot"></div>
         <div>
-          <strong id="statusTitle">SIMULATION ACTIVE</strong>
-          <span id="statusText">拖拽节点 · 点击选择起点 · Shift + 点击选择终点</span>
+          <strong id="statusTitle">BROWNIAN FIELD ACTIVE</strong>
+          <span id="statusText">节点独立缓慢随机游走 · 距离小于阈值自动连线</span>
         </div>
       </div>
 
-      <div class="legend" aria-label="图例">
-        <span><i class="legend-node normal"></i> 普通节点</span>
+      <div class="legend glass-panel" aria-label="图例">
+        <span><i class="legend-node normal"></i> 光点</span>
         <span><i class="legend-node start"></i> 起点</span>
         <span><i class="legend-node visited"></i> 已访问</span>
-        <span><i class="legend-line"></i> 最短路径</span>
+        <span><i class="legend-line"></i> 路径</span>
       </div>
 
-      <div class="metrics" aria-live="polite">
-        <div><span>NODE</span><strong id="metricNodes">50</strong></div>
+      <div class="metrics glass-panel" aria-live="polite">
+        <div><span>NODE</span><strong id="metricNodes">60</strong></div>
         <div><span>EDGE</span><strong id="metricEdges">0</strong></div>
         <div><span>FPS</span><strong id="metricFps">60</strong></div>
       </div>
