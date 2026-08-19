@@ -2,7 +2,7 @@
   'use strict';
 
   const canvas = document.getElementById('graphCanvas');
-  const ctx = canvas.getContext('2d', { alpha: false });
+  const ctx = canvas.getContext('2d', { alpha: true });
 
   const els = {
     nodeCount: document.getElementById('nodeCount'),
@@ -38,10 +38,22 @@
   let endNode = null;
   let algorithmRunId = 0;
   let algorithmBusy = false;
-  let edgeRebuildTimer = null;
+  let lastTime = performance.now();
+  let lastEdgeRefresh = 0;
+  let fpsFrames = 0;
+  let fpsStart = performance.now();
 
   const highlightedEdges = new Set();
   const pathEdges = new Set();
+
+  const palette = {
+    cyan: '#78dcff',
+    cyanSoft: '#5fc9ff',
+    blue: '#3f91ff',
+    blueDeep: '#1f63ff',
+    ice: '#ebfbff',
+    muted: '#8fc6df'
+  };
 
   function rand(min, max) {
     return min + Math.random() * (max - min);
@@ -55,6 +67,19 @@
     return a < b ? `${a}-${b}` : `${b}-${a}`;
   }
 
+  function parseEdgeKey(key) {
+    return key.split('-').map(Number);
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function setStatus(title, text) {
+    els.statusTitle.textContent = title;
+    els.statusText.textContent = text;
+  }
+
   function resize() {
     const rect = canvas.getBoundingClientRect();
     width = Math.max(1, rect.width);
@@ -63,133 +88,69 @@
     canvas.width = Math.floor(width * dpr);
     canvas.height = Math.floor(height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = '#030303';
-    ctx.fillRect(0, 0, width, height);
+    ctx.clearRect(0, 0, width, height);
+
+    const pad = 34;
+    for (const node of nodes) {
+      node.x = clamp(node.x, pad, width - pad);
+      node.y = clamp(node.y, pad, height - pad);
+    }
   }
 
   function createNodes(count) {
-    const margin = 70;
-    const usableW = Math.max(200, width - margin * 2);
-    const usableH = Math.max(200, height - margin * 2);
-    const clusterCount = Math.max(2, Math.min(5, Math.round(count / 16)));
-    const clusters = [];
-
-    for (let i = 0; i < clusterCount; i++) {
-      const angle = (Math.PI * 2 * i) / clusterCount + rand(-0.25, 0.25);
-      const rx = usableW * 0.28;
-      const ry = usableH * 0.23;
-      clusters.push({
-        x: width / 2 + Math.cos(angle) * rx,
-        y: height / 2 + Math.sin(angle) * ry
-      });
-    }
-
-    nodes = Array.from({ length: count }, (_, id) => {
-      const c = clusters[id % clusterCount];
-      return {
-        id,
-        x: clamp(c.x + rand(-usableW * 0.13, usableW * 0.13), margin, width - margin),
-        y: clamp(c.y + rand(-usableH * 0.16, usableH * 0.16), margin, height - margin),
-        vx: rand(-0.3, 0.3),
-        vy: rand(-0.3, 0.3),
-        radius: 5,
-        degree: 0,
-        state: 'normal',
-        pinned: false,
-        visitedOrder: -1
-      };
-    });
+    const pad = 62;
+    nodes = Array.from({ length: count }, (_, id) => ({
+      id,
+      x: rand(pad, Math.max(pad + 1, width - pad)),
+      y: rand(pad, Math.max(pad + 1, height - pad)),
+      vx: rand(-0.08, 0.08),
+      vy: rand(-0.08, 0.08),
+      degree: 0,
+      radius: rand(1.8, 2.6),
+      state: 'normal',
+      visitedOrder: -1,
+      pinned: false,
+      phase: rand(0, Math.PI * 2)
+    }));
   }
 
-  function connectGraph(radius) {
-    const set = new Set();
+  function refreshEdges(force = false) {
+    const now = performance.now();
+    if (!force && now - lastEdgeRefresh < 55) return;
+    lastEdgeRefresh = now;
+
+    const radius = Number(els.linkRadius.value);
+    const radiusSq = radius * radius;
     const nextEdges = [];
-
-    const addEdge = (a, b) => {
-      if (a === b) return;
-      const key = edgeKey(a, b);
-      if (set.has(key)) return;
-      set.add(key);
-      const dx = nodes[a].x - nodes[b].x;
-      const dy = nodes[a].y - nodes[b].y;
-      const dist = Math.hypot(dx, dy);
-      nextEdges.push({
-        a,
-        b,
-        rest: clamp(dist * rand(0.74, 0.9), 52, 150),
-        weight: Math.max(1, Math.round(dist / 12 + rand(0, 5)))
-      });
-    };
-
-    // Build a nearest-neighbour spanning tree first so every generated graph is connected.
-    for (let i = 1; i < nodes.length; i++) {
-      let nearest = 0;
-      let best = Infinity;
-      for (let j = 0; j < i; j++) {
-        const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
-        if (d < best) {
-          best = d;
-          nearest = j;
-        }
-      }
-      addEdge(i, nearest);
-    }
-
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const dx = nodes[i].x - nodes[j].x;
-        const dy = nodes[i].y - nodes[j].y;
-        const dist = Math.hypot(dx, dy);
-        if (dist > radius) continue;
-
-        const probability = 0.12 + 0.48 * (1 - dist / radius);
-        if (Math.random() < probability) addEdge(i, j);
-      }
-    }
-
-    // Give sparse nodes one or two additional nearby links.
+    const nextAdj = Array.from({ length: nodes.length }, () => []);
     const degree = Array(nodes.length).fill(0);
-    nextEdges.forEach(e => { degree[e.a]++; degree[e.b]++; });
+
     for (let i = 0; i < nodes.length; i++) {
-      if (degree[i] >= 2) continue;
-      const candidates = nodes
-        .map((n, j) => ({ j, d: i === j ? Infinity : Math.hypot(nodes[i].x - n.x, nodes[i].y - n.y) }))
-        .sort((p, q) => p.d - q.d);
-      for (const candidate of candidates.slice(0, 4)) {
-        if (degree[i] >= 2) break;
-        const before = nextEdges.length;
-        addEdge(i, candidate.j);
-        if (nextEdges.length > before) {
-          degree[i]++;
-          degree[candidate.j]++;
-        }
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= radiusSq) continue;
+
+        const dist = Math.sqrt(d2);
+        const proximity = 1 - dist / radius;
+        const weight = Math.max(1, Math.round(dist));
+        nextEdges.push({ a: i, b: j, dist, proximity, weight });
+        nextAdj[i].push({ to: j, weight });
+        nextAdj[j].push({ to: i, weight });
+        degree[i]++;
+        degree[j]++;
       }
     }
 
     edges = nextEdges;
-    rebuildAdjacency();
-    updateNodeRadii();
-    els.metricEdges.textContent = String(edges.length);
-  }
-
-  function rebuildAdjacency() {
-    adjacency = Array.from({ length: nodes.length }, () => []);
-    for (const edge of edges) {
-      adjacency[edge.a].push({ to: edge.b, weight: edge.weight });
-      adjacency[edge.b].push({ to: edge.a, weight: edge.weight });
-    }
-  }
-
-  function updateNodeRadii() {
-    const degrees = Array(nodes.length).fill(0);
-    for (const edge of edges) {
-      degrees[edge.a]++;
-      degrees[edge.b]++;
-    }
+    adjacency = nextAdj;
     nodes.forEach((node, i) => {
-      node.degree = degrees[i];
-      node.radius = clamp(4.8 + Math.sqrt(degrees[i]) * 1.9, 5, 13);
+      node.degree = degree[i];
     });
+    els.metricEdges.textContent = String(edges.length);
   }
 
   function resetAlgorithmVisuals() {
@@ -209,136 +170,65 @@
     resetAlgorithmVisuals();
     const count = Number(els.nodeCount.value);
     createNodes(count);
-    connectGraph(Number(els.linkRadius.value));
     startNode = 0;
-    endNode = count - 1;
+    endNode = count > 1 ? count - 1 : 0;
     nodes[startNode].state = 'start';
-    nodes[endNode].state = 'end';
+    if (endNode !== startNode) nodes[endNode].state = 'end';
+    refreshEdges(true);
     els.metricNodes.textContent = String(count);
-    setStatus('SIMULATION ACTIVE', '拖拽节点 · 点击选择起点 · Shift + 点击选择终点');
-  }
-
-  function rebuildEdgesOnly() {
-    resetAlgorithmVisuals();
-    connectGraph(Number(els.linkRadius.value));
-    if (startNode != null && nodes[startNode]) nodes[startNode].state = 'start';
-    if (endNode != null && nodes[endNode]) nodes[endNode].state = 'end';
+    setStatus('BROWNIAN FIELD ACTIVE', '节点独立缓慢随机游走 · 距离小于阈值自动连线');
   }
 
   function physicsStep(dt) {
-    if (paused || dragging) {
-      if (dragging != null && nodes[dragging]) {
-        nodes[dragging].vx *= 0.5;
-        nodes[dragging].vy *= 0.5;
-      }
-    }
+    if (paused) return;
 
-    const motion = Number(els.motion.value) / 100;
-    const repulsion = 1600 + motion * 1700;
-    const springK = 0.00165;
-    const centerK = 0.00018;
-    const damping = 0.985 - motion * 0.025;
-    const maxSpeed = 1.1 + motion * 2.5;
+    const activity = Number(els.motion.value) / 100;
+    const frameScale = clamp(dt / 16.6667, 0.2, 2.2);
+    const noise = activity * 0.032;
+    const damping = Math.pow(0.986, frameScale);
+    const maxSpeed = 0.10 + activity * 0.52;
+    const pad = 34;
 
-    if (!paused) {
-      for (let i = 0; i < nodes.length; i++) {
-        const a = nodes[i];
-        for (let j = i + 1; j < nodes.length; j++) {
-          const b = nodes[j];
-          let dx = b.x - a.x;
-          let dy = b.y - a.y;
-          let d2 = dx * dx + dy * dy + 80;
-          const d = Math.sqrt(d2);
-          const force = repulsion / d2;
-          dx /= d;
-          dy /= d;
-          a.vx -= dx * force * dt;
-          a.vy -= dy * force * dt;
-          b.vx += dx * force * dt;
-          b.vy += dy * force * dt;
-        }
+    for (const node of nodes) {
+      if (node.pinned) continue;
+
+      // Ornstein-Uhlenbeck style Brownian drift: white-noise impulses + gentle damping.
+      // This keeps the motion random, slow and locally smooth instead of ballistic.
+      node.vx = node.vx * damping + rand(-noise, noise) * Math.sqrt(frameScale);
+      node.vy = node.vy * damping + rand(-noise, noise) * Math.sqrt(frameScale);
+
+      const speed = Math.hypot(node.vx, node.vy);
+      if (speed > maxSpeed) {
+        node.vx = (node.vx / speed) * maxSpeed;
+        node.vy = (node.vy / speed) * maxSpeed;
       }
 
-      for (const edge of edges) {
-        const a = nodes[edge.a];
-        const b = nodes[edge.b];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const d = Math.max(1, Math.hypot(dx, dy));
-        const stretch = d - edge.rest;
-        const force = stretch * springK;
-        const fx = (dx / d) * force;
-        const fy = (dy / d) * force;
-        a.vx += fx * dt;
-        a.vy += fy * dt;
-        b.vx -= fx * dt;
-        b.vy -= fy * dt;
+      node.x += node.vx * frameScale;
+      node.y += node.vy * frameScale;
+
+      if (node.x < pad) {
+        node.x = pad;
+        node.vx = Math.abs(node.vx) * 0.72;
+      } else if (node.x > width - pad) {
+        node.x = width - pad;
+        node.vx = -Math.abs(node.vx) * 0.72;
       }
 
-      const cx = width / 2;
-      const cy = height / 2;
-      for (const node of nodes) {
-        node.vx += (cx - node.x) * centerK * dt;
-        node.vy += (cy - node.y) * centerK * dt;
-        node.vx += rand(-0.006, 0.006) * motion * dt;
-        node.vy += rand(-0.006, 0.006) * motion * dt;
-      }
-
-      // Soft collision pass.
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const a = nodes[i];
-          const b = nodes[j];
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const d = Math.max(0.1, Math.hypot(dx, dy));
-          const minD = a.radius + b.radius + 7;
-          if (d >= minD) continue;
-          const push = (minD - d) * 0.02;
-          const px = (dx / d) * push;
-          const py = (dy / d) * push;
-          a.vx -= px;
-          a.vy -= py;
-          b.vx += px;
-          b.vy += py;
-        }
-      }
-
-      const pad = 26;
-      for (const node of nodes) {
-        if (node.pinned) continue;
-        node.vx *= damping;
-        node.vy *= damping;
-        const speed = Math.hypot(node.vx, node.vy);
-        if (speed > maxSpeed) {
-          node.vx = (node.vx / speed) * maxSpeed;
-          node.vy = (node.vy / speed) * maxSpeed;
-        }
-        node.x += node.vx * dt;
-        node.y += node.vy * dt;
-
-        if (node.x < pad) { node.x = pad; node.vx = Math.abs(node.vx) * 0.65; }
-        if (node.x > width - pad) { node.x = width - pad; node.vx = -Math.abs(node.vx) * 0.65; }
-        if (node.y < pad) { node.y = pad; node.vy = Math.abs(node.vy) * 0.65; }
-        if (node.y > height - pad) { node.y = height - pad; node.vy = -Math.abs(node.vy) * 0.65; }
+      if (node.y < pad) {
+        node.y = pad;
+        node.vy = Math.abs(node.vy) * 0.72;
+      } else if (node.y > height - pad) {
+        node.y = height - pad;
+        node.vy = -Math.abs(node.vy) * 0.72;
       }
     }
   }
 
-  function draw() {
-    const trail = Number(els.trail.value) / 100;
-    const fadeAlpha = trail <= 0.01 ? 1 : 0.34 - trail * 0.28;
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = `rgba(3,3,3,${clamp(fadeAlpha, 0.045, 1)})`;
-    ctx.fillRect(0, 0, width, height);
-
-    const neighbourSet = new Set();
-    if (hovered != null) {
-      neighbourSet.add(hovered);
-      for (const n of adjacency[hovered]) neighbourSet.add(n.to);
-    }
-
+  function drawBaseEdges() {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
     ctx.lineCap = 'round';
+
     for (const edge of edges) {
       const a = nodes[edge.a];
       const b = nodes[edge.b];
@@ -347,383 +237,483 @@
       const isStep = highlightedEdges.has(key);
       const isHover = hovered != null && (edge.a === hovered || edge.b === hovered);
 
-      let alpha = 0.12;
-      let lineWidth = 0.75;
-      if (isHover) { alpha = 0.38; lineWidth = 1.15; }
-      if (isStep) { alpha = 0.56; lineWidth = 1.5; }
-      if (isPath) { alpha = 0.95; lineWidth = 2.15; }
+      let alpha = 0.035 + edge.proximity * 0.13;
+      let lineWidth = 0.55 + edge.proximity * 0.35;
+
+      if (isHover) {
+        alpha = 0.34 + edge.proximity * 0.22;
+        lineWidth = 1.05;
+      }
+      if (isStep) {
+        alpha = 0.72;
+        lineWidth = 1.4;
+      }
+      if (isPath) {
+        alpha = 0.96;
+        lineWidth = 1.9;
+      }
 
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
-      ctx.strokeStyle = `rgba(235,235,235,${alpha})`;
+      ctx.strokeStyle = isPath
+        ? `rgba(118, 220, 255, ${alpha})`
+        : `rgba(61, 148, 255, ${alpha})`;
       ctx.lineWidth = lineWidth;
-      if (isPath) {
-        ctx.shadowColor = 'rgba(255,255,255,.65)';
-        ctx.shadowBlur = 9;
+
+      if (isPath || isStep) {
+        ctx.shadowColor = isPath ? 'rgba(95, 211, 255, .9)' : 'rgba(58, 143, 255, .72)';
+        ctx.shadowBlur = isPath ? 13 : 8;
       }
+
       ctx.stroke();
       ctx.shadowBlur = 0;
-
-      if (isPath) {
-        const phase = ((performance.now() / 950) + (edge.a + edge.b) * 0.07) % 1;
-        const px = a.x + (b.x - a.x) * phase;
-        const py = a.y + (b.y - a.y) * phase;
-        ctx.beginPath();
-        ctx.arc(px, py, 2.2, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255,255,255,.95)';
-        ctx.shadowColor = 'rgba(255,255,255,.9)';
-        ctx.shadowBlur = 12;
-        ctx.fill();
-        ctx.shadowBlur = 0;
-      }
     }
 
-    for (const node of nodes) {
-      const hoveredNode = hovered === node.id;
-      const dimmed = hovered != null && !neighbourSet.has(node.id);
-      const active = node.state === 'active';
-      const visited = node.state === 'visited';
-      const onPath = node.state === 'path';
-      const isStart = node.id === startNode;
-      const isEnd = node.id === endNode;
+    ctx.restore();
+  }
 
-      let radius = node.radius;
-      if (hoveredNode || active || isStart || isEnd) radius += 2.2;
-      if (onPath) radius += 1.4;
+  function drawAlgorithmOverlays() {
+    const visible = new Set(edges.map(e => edgeKey(e.a, e.b)));
+    const overlays = new Set([...highlightedEdges, ...pathEdges]);
 
-      const alpha = dimmed ? 0.18 : visited ? 0.58 : 0.88;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+
+    for (const key of overlays) {
+      if (visible.has(key)) continue;
+      const [aId, bId] = parseEdgeKey(key);
+      const a = nodes[aId];
+      const b = nodes[bId];
+      if (!a || !b) continue;
+      const isPath = pathEdges.has(key);
       ctx.beginPath();
-      ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(238,238,238,${alpha})`;
-      ctx.strokeStyle = isStart || isEnd || active || onPath
-        ? 'rgba(255,255,255,.98)'
-        : 'rgba(255,255,255,.44)';
-      ctx.lineWidth = isStart || isEnd || active ? 1.7 : 0.8;
-      if (active || hoveredNode || isStart || isEnd || onPath) {
-        ctx.shadowColor = 'rgba(255,255,255,.82)';
-        ctx.shadowBlur = active ? 24 : 15;
-      }
-      ctx.fill();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.strokeStyle = isPath ? 'rgba(118,220,255,.86)' : 'rgba(68,142,255,.56)';
+      ctx.lineWidth = isPath ? 1.8 : 1.2;
+      ctx.shadowColor = isPath ? 'rgba(100,220,255,.9)' : 'rgba(53,133,255,.7)';
+      ctx.shadowBlur = isPath ? 12 : 7;
       ctx.stroke();
       ctx.shadowBlur = 0;
+    }
 
-      ctx.font = `${active ? 600 : 450} 11px ui-monospace, SFMono-Regular, Menlo, monospace`;
-      ctx.fillStyle = dimmed ? 'rgba(255,255,255,.16)' : 'rgba(255,255,255,.72)';
-      ctx.fillText(String(node.id), node.x + radius + 5, node.y - radius * 0.42);
+    const now = performance.now();
+    for (const key of pathEdges) {
+      const [aId, bId] = parseEdgeKey(key);
+      const a = nodes[aId];
+      const b = nodes[bId];
+      if (!a || !b) continue;
+      const phase = ((now / 1100) + (aId + bId) * 0.071) % 1;
+      const px = a.x + (b.x - a.x) * phase;
+      const py = a.y + (b.y - a.y) * phase;
+      ctx.beginPath();
+      ctx.arc(px, py, 1.8, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(220, 251, 255, .98)';
+      ctx.shadowColor = 'rgba(88, 211, 255, 1)';
+      ctx.shadowBlur = 15;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
 
-      if (node.visitedOrder >= 0 && node.state !== 'path') {
-        ctx.font = '8px ui-monospace, SFMono-Regular, Menlo, monospace';
-        ctx.fillStyle = 'rgba(255,255,255,.28)';
-        ctx.fillText(`#${node.visitedOrder}`, node.x + radius + 5, node.y + radius + 7);
-      }
+    ctx.restore();
+  }
+
+  function drawNode(node, now) {
+    const selected = node.id === startNode || node.id === endNode;
+    const hoveredNode = node.id === hovered;
+    const visited = node.state === 'visited';
+    const active = node.state === 'active';
+    const isStart = node.id === startNode;
+    const isEnd = node.id === endNode;
+
+    let core = palette.cyan;
+    let glow = 'rgba(70, 184, 255, .88)';
+    let radius = 2.0 + Math.min(1.7, Math.sqrt(node.degree) * 0.16);
+
+    if (visited) {
+      core = '#66a8ff';
+      glow = 'rgba(55, 111, 255, .9)';
+    }
+    if (active) {
+      core = '#e9fdff';
+      glow = 'rgba(89, 225, 255, 1)';
+      radius += 1.3;
+    }
+    if (isEnd) {
+      core = '#95b7ff';
+      glow = 'rgba(73, 113, 255, 1)';
+      radius += 1.0;
+    }
+    if (isStart) {
+      core = '#f0fdff';
+      glow = 'rgba(75, 202, 255, 1)';
+      radius += 1.4;
+    }
+    if (hoveredNode) radius += 1.8;
+
+    const breathe = 0.88 + Math.sin(now * 0.0018 + node.phase) * 0.12;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, radius * (3.3 + breathe), 0, Math.PI * 2);
+    ctx.fillStyle = isStart || isEnd || active
+      ? 'rgba(84, 192, 255, .075)'
+      : 'rgba(46, 137, 255, .035)';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = core;
+    ctx.shadowColor = glow;
+    ctx.shadowBlur = selected || hoveredNode || active ? 24 : 14;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(node.x - radius * .25, node.y - radius * .25, Math.max(.65, radius * .34), 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,.94)';
+    ctx.shadowBlur = 7;
+    ctx.fill();
+
+    ctx.restore();
+
+    const showLabel = nodes.length <= 80 || selected || hoveredNode || visited || active;
+    if (showLabel) {
+      ctx.save();
+      ctx.font = selected || hoveredNode ? '600 9px Inter, system-ui, sans-serif' : '500 8px Inter, system-ui, sans-serif';
+      ctx.fillStyle = selected || hoveredNode
+        ? 'rgba(211, 245, 255, .86)'
+        : 'rgba(143, 201, 230, .42)';
+      ctx.shadowColor = 'rgba(32, 126, 255, .45)';
+      ctx.shadowBlur = selected || hoveredNode ? 7 : 0;
+      const suffix = node.visitedOrder >= 0 ? ` · ${node.visitedOrder}` : '';
+      ctx.fillText(`${node.id}${suffix}`, node.x + radius + 5, node.y - radius - 3);
+      ctx.restore();
     }
   }
 
-  function findNode(x, y) {
-    let hit = null;
-    let best = Infinity;
+  function draw() {
+    const trail = Number(els.trail.value) / 100;
+    const fadeAlpha = trail <= 0.01 ? 1 : clamp(0.30 - trail * 0.245, 0.055, 0.30);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `rgba(1, 7, 16, ${fadeAlpha})`;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+
+    drawBaseEdges();
+    drawAlgorithmOverlays();
+
+    const now = performance.now();
+    for (const node of nodes) drawNode(node, now);
+  }
+
+  function nearestNode(x, y, radius = 16) {
+    let best = null;
+    let bestD = radius;
     for (const node of nodes) {
-      const d = Math.hypot(x - node.x, y - node.y);
-      if (d <= node.radius + 8 && d < best) {
-        hit = node.id;
-        best = d;
+      const d = Math.hypot(node.x - x, node.y - y);
+      if (d < bestD) {
+        bestD = d;
+        best = node.id;
       }
     }
-    return hit;
+    return best;
   }
 
   function pointerPosition(event) {
     const rect = canvas.getBoundingClientRect();
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top
+    };
   }
 
-  function setStatus(title, text) {
-    els.statusTitle.textContent = title;
-    els.statusText.textContent = text;
-  }
+  function applySelection(nodeId, chooseEnd) {
+    if (nodeId == null || !nodes[nodeId]) return;
+    resetAlgorithmVisuals();
 
-  canvas.addEventListener('pointermove', event => {
-    const p = pointerPosition(event);
-    if (dragging != null && nodes[dragging]) {
-      const node = nodes[dragging];
-      node.x = clamp(p.x, 18, width - 18);
-      node.y = clamp(p.y, 18, height - 18);
-      node.vx = 0;
-      node.vy = 0;
-      node.pinned = true;
-      canvas.style.cursor = 'grabbing';
-      return;
-    }
-    hovered = findNode(p.x, p.y);
-    canvas.style.cursor = hovered == null ? 'crosshair' : 'grab';
-  });
-
-  canvas.addEventListener('pointerleave', () => {
-    hovered = null;
-    if (dragging == null) canvas.style.cursor = 'crosshair';
-  });
-
-  canvas.addEventListener('pointerdown', event => {
-    const p = pointerPosition(event);
-    const hit = findNode(p.x, p.y);
-    if (hit == null) return;
-    pointerDown = { id: hit, x: p.x, y: p.y, time: performance.now(), shift: event.shiftKey };
-    dragging = hit;
-    nodes[hit].pinned = true;
-    canvas.setPointerCapture(event.pointerId);
-  });
-
-  canvas.addEventListener('pointerup', event => {
-    if (dragging == null) return;
-    const p = pointerPosition(event);
-    const id = dragging;
-    const click = pointerDown && Math.hypot(p.x - pointerDown.x, p.y - pointerDown.y) < 5 && performance.now() - pointerDown.time < 420;
-    nodes[id].pinned = false;
-    dragging = null;
-    canvas.style.cursor = hovered == null ? 'crosshair' : 'grab';
-
-    if (click) {
-      resetAlgorithmVisuals();
-      if (pointerDown.shift) {
-        endNode = id;
-      } else {
-        startNode = id;
-      }
-      if (startNode != null && nodes[startNode]) nodes[startNode].state = 'start';
-      if (endNode != null && nodes[endNode]) nodes[endNode].state = 'end';
-      setStatus('SELECTION UPDATED', `起点 ${startNode ?? '—'} · 终点 ${endNode ?? '—'} · Shift + 点击设置终点`);
+    if (chooseEnd) {
+      endNode = nodeId;
+    } else {
+      startNode = nodeId;
     }
 
-    pointerDown = null;
-    try { canvas.releasePointerCapture(event.pointerId); } catch (_) {}
-  });
+    for (const node of nodes) node.state = 'normal';
+    if (startNode != null && nodes[startNode]) nodes[startNode].state = 'start';
+    if (endNode != null && nodes[endNode] && endNode !== startNode) nodes[endNode].state = 'end';
 
-  function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    setStatus(
+      'SELECTION UPDATED',
+      `起点 ${startNode ?? '—'} · 终点 ${endNode ?? '—'} · Shift + 点击选择终点`
+    );
   }
 
-  async function animateTraversal(order, parents, runId, label) {
-    for (let i = 0; i < order.length; i++) {
-      if (runId !== algorithmRunId) return false;
-      const id = order[i];
-      const node = nodes[id];
-      node.state = 'active';
-      node.visitedOrder = i + 1;
-      if (parents[id] != null) highlightedEdges.add(edgeKey(id, parents[id]));
-      setStatus(`${label} · ${i + 1}/${order.length}`, `正在访问节点 ${id}`);
-      await sleep(clamp(165 - nodes.length * 0.9, 68, 150));
-      if (id !== startNode && id !== endNode) node.state = 'visited';
-    }
-    return true;
+  function snapshotAdjacency() {
+    refreshEdges(true);
+    return adjacency.map(list => list.map(item => ({ ...item })));
   }
 
-  function reconstructPath(parents, target) {
-    if (target == null || target < 0 || parents[target] === undefined) return [];
-    const path = [];
-    let current = target;
-    const guard = new Set();
-    while (current != null && !guard.has(current)) {
-      guard.add(current);
-      path.push(current);
-      if (current === startNode) break;
-      current = parents[current];
-    }
-    if (path[path.length - 1] !== startNode) return [];
-    return path.reverse();
-  }
+  async function animateTraversal(kind) {
+    if (startNode == null || !nodes[startNode]) return;
 
-  function markPath(path) {
+    const graph = snapshotAdjacency();
+    const runId = ++algorithmRunId;
+    algorithmBusy = true;
+    highlightedEdges.clear();
     pathEdges.clear();
-    for (let i = 0; i < path.length; i++) {
-      const id = path[i];
-      if (id !== startNode && id !== endNode) nodes[id].state = 'path';
-      if (i > 0) pathEdges.add(edgeKey(path[i - 1], id));
+    for (const node of nodes) {
+      node.state = 'normal';
+      node.visitedOrder = -1;
     }
-    if (startNode != null) nodes[startNode].state = 'start';
-    if (endNode != null) nodes[endNode].state = 'end';
-  }
+    nodes[startNode].state = 'start';
+    if (endNode != null && endNode !== startNode) nodes[endNode].state = 'end';
 
-  async function runBfs(runId) {
-    const queue = [startNode];
-    const seen = new Set([startNode]);
-    const parents = Array(nodes.length).fill(undefined);
-    parents[startNode] = null;
-    const order = [];
+    const visited = new Set();
+    const previous = Array(nodes.length).fill(null);
+    const frontier = [startNode];
+    let order = 0;
 
-    while (queue.length) {
-      const current = queue.shift();
-      order.push(current);
+    setStatus(kind === 'bfs' ? 'BFS RUNNING' : 'DFS RUNNING', '以当前距离邻接关系为快照执行搜索');
+
+    while (frontier.length && runId === algorithmRunId) {
+      const current = kind === 'bfs' ? frontier.shift() : frontier.pop();
+      if (visited.has(current)) continue;
+      visited.add(current);
+
+      const node = nodes[current];
+      if (!node) continue;
+      node.state = 'active';
+      node.visitedOrder = order++;
+
+      if (previous[current] != null) highlightedEdges.add(edgeKey(current, previous[current]));
+      await sleep(70);
+      if (runId !== algorithmRunId) return;
+
+      node.state = current === startNode ? 'start' : current === endNode ? 'end' : 'visited';
       if (current === endNode) break;
-      for (const item of adjacency[current]) {
-        if (seen.has(item.to)) continue;
-        seen.add(item.to);
-        parents[item.to] = current;
-        queue.push(item.to);
+
+      const neighbours = [...graph[current]];
+      if (kind === 'dfs') neighbours.reverse();
+      for (const next of neighbours) {
+        if (visited.has(next.to)) continue;
+        if (previous[next.to] == null && next.to !== startNode) previous[next.to] = current;
+        frontier.push(next.to);
       }
     }
 
-    const ok = await animateTraversal(order, parents, runId, 'BFS');
-    if (!ok) return;
-    const path = reconstructPath(parents, endNode);
-    if (path.length) markPath(path);
-    setStatus('BFS COMPLETE', path.length ? `找到 ${path.length - 1} 条边的路径` : '遍历完成，未找到终点');
+    finishTraversal(previous, runId, kind.toUpperCase());
   }
 
-  async function runDfs(runId) {
-    const stack = [startNode];
-    const seen = new Set();
-    const parents = Array(nodes.length).fill(undefined);
-    parents[startNode] = null;
-    const order = [];
+  async function animateDijkstra() {
+    if (startNode == null || !nodes[startNode]) return;
 
-    while (stack.length) {
-      const current = stack.pop();
-      if (seen.has(current)) continue;
-      seen.add(current);
-      order.push(current);
-      if (current === endNode) break;
-      const neighbours = adjacency[current].slice().reverse();
-      for (const item of neighbours) {
-        if (!seen.has(item.to)) {
-          if (parents[item.to] === undefined) parents[item.to] = current;
-          stack.push(item.to);
-        }
-      }
+    const graph = snapshotAdjacency();
+    const runId = ++algorithmRunId;
+    algorithmBusy = true;
+    highlightedEdges.clear();
+    pathEdges.clear();
+
+    for (const node of nodes) {
+      node.state = 'normal';
+      node.visitedOrder = -1;
     }
+    nodes[startNode].state = 'start';
+    if (endNode != null && endNode !== startNode) nodes[endNode].state = 'end';
 
-    const ok = await animateTraversal(order, parents, runId, 'DFS');
-    if (!ok) return;
-    const path = reconstructPath(parents, endNode);
-    if (path.length) markPath(path);
-    setStatus('DFS COMPLETE', path.length ? `DFS 搜索路径长度 ${path.length - 1}` : '遍历完成，未找到终点');
-  }
-
-  async function runDijkstra(runId) {
     const dist = Array(nodes.length).fill(Infinity);
-    const parents = Array(nodes.length).fill(undefined);
-    const done = new Set();
-    const order = [];
+    const previous = Array(nodes.length).fill(null);
+    const used = new Set();
     dist[startNode] = 0;
-    parents[startNode] = null;
+    let order = 0;
 
-    while (done.size < nodes.length) {
-      let current = -1;
+    setStatus('DIJKSTRA RUNNING', '边权采用运行瞬间的节点欧氏距离');
+
+    while (used.size < nodes.length && runId === algorithmRunId) {
+      let current = null;
       let best = Infinity;
       for (let i = 0; i < nodes.length; i++) {
-        if (!done.has(i) && dist[i] < best) {
+        if (!used.has(i) && dist[i] < best) {
           best = dist[i];
           current = i;
         }
       }
-      if (current < 0) break;
-      done.add(current);
-      order.push(current);
+      if (current == null) break;
+
+      used.add(current);
+      nodes[current].state = 'active';
+      nodes[current].visitedOrder = order++;
+      if (previous[current] != null) highlightedEdges.add(edgeKey(current, previous[current]));
+
+      await sleep(72);
+      if (runId !== algorithmRunId) return;
+
+      nodes[current].state = current === startNode ? 'start' : current === endNode ? 'end' : 'visited';
       if (current === endNode) break;
 
-      for (const item of adjacency[current]) {
-        const candidate = dist[current] + item.weight;
-        if (candidate < dist[item.to]) {
-          dist[item.to] = candidate;
-          parents[item.to] = current;
+      for (const next of graph[current]) {
+        if (used.has(next.to)) continue;
+        const candidate = dist[current] + next.weight;
+        if (candidate < dist[next.to]) {
+          dist[next.to] = candidate;
+          previous[next.to] = current;
         }
       }
     }
 
-    const ok = await animateTraversal(order, parents, runId, 'DIJKSTRA');
-    if (!ok) return;
-    const path = reconstructPath(parents, endNode);
-    if (path.length) markPath(path);
-    setStatus('DIJKSTRA COMPLETE', Number.isFinite(dist[endNode]) ? `最短距离 ${dist[endNode]} · ${path.length - 1} 条边` : '终点不可达');
+    finishTraversal(previous, runId, 'DIJKSTRA', Number.isFinite(dist[endNode]) ? dist[endNode] : null);
   }
 
-  async function runAlgorithm() {
-    if (!nodes.length) return;
-    if (startNode == null) startNode = 0;
-    if (endNode == null) endNode = nodes.length - 1;
+  function finishTraversal(previous, runId, label, distance = null) {
+    if (runId !== algorithmRunId) return;
+    pathEdges.clear();
 
-    resetAlgorithmVisuals();
-    const runId = ++algorithmRunId;
-    algorithmBusy = true;
-    nodes[startNode].state = 'start';
-    nodes[endNode].state = 'end';
-    els.runAlgorithm.disabled = true;
-
-    try {
-      const algo = els.algorithm.value;
-      if (algo === 'dfs') await runDfs(runId);
-      else if (algo === 'dijkstra') await runDijkstra(runId);
-      else await runBfs(runId);
-    } finally {
-      if (runId === algorithmRunId) {
-        algorithmBusy = false;
-        els.runAlgorithm.disabled = false;
+    let pathLength = 0;
+    if (endNode != null && endNode !== startNode) {
+      let current = endNode;
+      const guard = new Set();
+      while (current != null && current !== startNode && !guard.has(current)) {
+        guard.add(current);
+        const prev = previous[current];
+        if (prev == null) break;
+        pathEdges.add(edgeKey(current, prev));
+        pathLength++;
+        current = prev;
       }
+    }
+
+    algorithmBusy = false;
+    if (endNode === startNode || pathEdges.size > 0) {
+      const distanceText = distance == null ? `${pathLength} 条边` : `距离 ${Math.round(distance)}`;
+      setStatus(`${label} COMPLETE`, `路径已锁定 · ${distanceText} · 节点仍继续布朗运动`);
+    } else {
+      setStatus(`${label} COMPLETE`, '当前邻接快照中起点与终点不连通');
     }
   }
 
-  function bindRange(input, output, handler) {
-    const update = () => {
-      output.textContent = input.value;
-      if (handler) handler();
-    };
-    input.addEventListener('input', update);
-    update();
+  async function runSelectedAlgorithm() {
+    if (algorithmBusy) resetAlgorithmVisuals();
+    const kind = els.algorithm.value;
+    if (kind === 'dijkstra') await animateDijkstra();
+    else await animateTraversal(kind);
   }
 
-  bindRange(els.nodeCount, els.nodeCountValue, () => {
-    clearTimeout(edgeRebuildTimer);
-    edgeRebuildTimer = setTimeout(regenerate, 120);
+  function syncControls() {
+    els.nodeCountValue.textContent = els.nodeCount.value;
+    els.linkRadiusValue.textContent = els.linkRadius.value;
+    els.motionValue.textContent = els.motion.value;
+    els.trailValue.textContent = els.trail.value;
+  }
+
+  els.nodeCount.addEventListener('input', () => {
+    syncControls();
   });
 
-  bindRange(els.linkRadius, els.linkRadiusValue, () => {
-    clearTimeout(edgeRebuildTimer);
-    edgeRebuildTimer = setTimeout(rebuildEdgesOnly, 110);
+  els.nodeCount.addEventListener('change', regenerate);
+
+  els.linkRadius.addEventListener('input', () => {
+    syncControls();
+    refreshEdges(true);
   });
 
-  bindRange(els.motion, els.motionValue);
-  bindRange(els.trail, els.trailValue);
-
+  els.motion.addEventListener('input', syncControls);
+  els.trail.addEventListener('input', syncControls);
   els.regenerate.addEventListener('click', regenerate);
-  els.runAlgorithm.addEventListener('click', runAlgorithm);
+  els.runAlgorithm.addEventListener('click', runSelectedAlgorithm);
+
   els.pause.addEventListener('click', () => {
     paused = !paused;
     els.pause.textContent = paused ? '继续' : '暂停';
     els.pause.setAttribute('aria-pressed', String(paused));
-    setStatus(paused ? 'SIMULATION PAUSED' : 'SIMULATION ACTIVE', paused ? '图布局已冻结，算法动画仍可运行' : '拖拽节点 · 点击选择起点 · Shift + 点击选择终点');
+    setStatus(
+      paused ? 'FIELD PAUSED' : 'BROWNIAN FIELD ACTIVE',
+      paused ? '节点位置已冻结，距离邻接关系保持当前状态' : '节点恢复独立缓慢随机游走'
+    );
   });
 
-  let last = performance.now();
-  let fpsClock = last;
-  let frameCount = 0;
+  canvas.addEventListener('pointermove', event => {
+    const p = pointerPosition(event);
+
+    if (dragging != null && nodes[dragging]) {
+      const node = nodes[dragging];
+      node.x = clamp(p.x, 28, width - 28);
+      node.y = clamp(p.y, 28, height - 28);
+      node.vx = 0;
+      node.vy = 0;
+      refreshEdges(true);
+      return;
+    }
+
+    hovered = nearestNode(p.x, p.y, 18);
+    canvas.style.cursor = hovered == null ? 'crosshair' : 'grab';
+  });
+
+  canvas.addEventListener('pointerdown', event => {
+    const p = pointerPosition(event);
+    const id = nearestNode(p.x, p.y, 18);
+    pointerDown = { x: p.x, y: p.y, id, shift: event.shiftKey };
+    if (id != null) {
+      dragging = id;
+      nodes[id].pinned = true;
+      canvas.setPointerCapture(event.pointerId);
+      canvas.style.cursor = 'grabbing';
+    }
+  });
+
+  canvas.addEventListener('pointerup', event => {
+    const p = pointerPosition(event);
+    const moved = pointerDown ? Math.hypot(p.x - pointerDown.x, p.y - pointerDown.y) : Infinity;
+    const id = dragging;
+
+    if (id != null && nodes[id]) {
+      nodes[id].pinned = false;
+      nodes[id].vx = rand(-0.05, 0.05);
+      nodes[id].vy = rand(-0.05, 0.05);
+    }
+
+    dragging = null;
+    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    canvas.style.cursor = hovered == null ? 'crosshair' : 'grab';
+
+    if (pointerDown && pointerDown.id != null && moved < 6) {
+      applySelection(pointerDown.id, event.shiftKey || pointerDown.shift);
+    }
+    pointerDown = null;
+  });
+
+  canvas.addEventListener('pointerleave', () => {
+    if (dragging == null) hovered = null;
+  });
+
+  window.addEventListener('resize', () => {
+    resize();
+    refreshEdges(true);
+  });
 
   function frame(now) {
-    const elapsed = now - last;
-    last = now;
-    const dt = clamp(elapsed / 16.6667, 0.25, 2.2);
+    const dt = Math.min(34, now - lastTime || 16.67);
+    lastTime = now;
 
     physicsStep(dt);
+    refreshEdges(false);
     draw();
 
-    frameCount++;
-    if (now - fpsClock >= 500) {
-      const fps = Math.round((frameCount * 1000) / (now - fpsClock));
+    fpsFrames++;
+    if (now - fpsStart >= 500) {
+      const fps = Math.round((fpsFrames * 1000) / (now - fpsStart));
       els.metricFps.textContent = String(fps);
-      frameCount = 0;
-      fpsClock = now;
+      fpsFrames = 0;
+      fpsStart = now;
     }
 
     requestAnimationFrame(frame);
   }
 
-  window.addEventListener('resize', () => {
-    resize();
-    for (const node of nodes) {
-      node.x = clamp(node.x, 28, width - 28);
-      node.y = clamp(node.y, 28, height - 28);
-    }
-  });
-
+  syncControls();
   resize();
   regenerate();
   requestAnimationFrame(frame);
