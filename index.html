@@ -1,96 +1,87 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#03111f" />
-  <title>Edge Point · 布朗邻接网络</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#f6f5f1" />
+  <title>布朗 idopNetwork · Edge Point</title>
+  <meta name="description" content="布朗运动中的有向互作网络：节点随机游走、相遇即产生促进或抑制作用，表达量随之改变。idopNetwork 的交互演示。" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%227%22 fill=%22%23f6f5f1%22/%3E%3Cpath d=%22M9 22 L16 9 L24 20%22 stroke=%22%23b8322a%22 stroke-width=%222.2%22 fill=%22none%22/%3E%3Ccircle cx=%229%22 cy=%2222%22 r=%223.4%22 fill=%22%231d1d1b%22/%3E%3Ccircle cx=%2216%22 cy=%229%22 r=%223.4%22 fill=%22%231d1d1b%22/%3E%3Ccircle cx=%2224%22 cy=%2220%22 r=%223.4%22 fill=%22%231d1d1b%22/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <main class="app-shell">
-    <header class="topbar glass-panel">
-      <div class="brand-block">
-        <div class="brand-mark" aria-hidden="true">
-          <span></span><span></span><span></span>
-        </div>
-        <div>
-          <h1>布朗邻接网络</h1>
-          <p>EDGE POINT · BROWNIAN PROXIMITY GRAPH</p>
-        </div>
+  <canvas id="stage" aria-label="布朗 idopNetwork 画布：可拖动、点击节点"></canvas>
+
+  <aside class="panel" id="panel">
+    <header class="panel-head">
+      <div>
+        <h1>布朗 idopNetwork</h1>
+        <p class="sub">节点随机游走，相遇即产生有向作用</p>
       </div>
-
-      <div class="toolbar" aria-label="图参数控制">
-        <label class="control">
-          <span>节点</span>
-          <input id="nodeCount" type="range" min="18" max="110" value="60" />
-          <output id="nodeCountValue">60</output>
-        </label>
-
-        <label class="control">
-          <span>连接距离</span>
-          <input id="linkRadius" type="range" min="70" max="300" value="170" />
-          <output id="linkRadiusValue">170</output>
-        </label>
-
-        <label class="control">
-          <span>运动速度</span>
-          <input id="speed" type="range" min="0" max="100" value="35" />
-          <output id="speedValue">35</output>
-        </label>
-
-        <label class="control">
-          <span>光迹</span>
-          <input id="trail" type="range" min="0" max="100" value="10" />
-          <output id="trailValue">10</output>
-        </label>
-
-        <label class="control color-control">
-          <span>主色</span>
-          <input id="themeColor" type="color" value="#59c9ff" aria-label="调整节点与连线主色" />
-          <output id="colorValue">#59C9FF</output>
-        </label>
-      </div>
-
-      <div class="actions">
-        <select id="algorithm" aria-label="选择算法">
-          <option value="bfs">BFS 广度优先</option>
-          <option value="dfs">DFS 深度优先</option>
-          <option value="dijkstra">Dijkstra 最短路</option>
-        </select>
-        <button id="runAlgorithm" class="primary">运行算法</button>
-        <button id="regenerate">重生成</button>
-        <button id="pause" aria-pressed="false">暂停</button>
-      </div>
+      <button class="icon-btn" id="collapse" aria-label="收起面板" title="收起面板">–</button>
     </header>
 
-    <section class="stage" aria-label="布朗运动动态图可视化画布">
-      <canvas id="graphCanvas"></canvas>
-      <div class="ambient ambient-a"></div>
-      <div class="ambient ambient-b"></div>
+    <div class="panel-body">
+      <p class="formula" aria-label="表达量等于独立效应加依赖效应">
+        <i>E</i><sub>i</sub>(t) = <i>Q</i><sub>i</sub>(<i>E</i><sub>i</sub>) + <span class="sum">Σ</span><sub>j≠i</sub> <i>Q</i><sub>i←j</sub>(<i>E</i><sub>j</sub>)
+        <small>表达量 ＝ 独立效应 ＋ 来自其他节点的依赖效应</small>
+      </p>
 
-      <div class="status-card glass-panel">
-        <div class="status-dot"></div>
-        <div>
-          <strong id="statusTitle">BROWNIAN FIELD ACTIVE</strong>
-          <span id="statusText">节点持续随机游走 · 小于连接距离时自动连线</span>
-        </div>
+      <div class="controls">
+        <label class="ctl"><span>节点数</span><input id="nodeCount" type="range" min="8" max="60" value="26" /><output>26</output></label>
+        <label class="ctl"><span>作用半径</span><input id="radius" type="range" min="80" max="360" value="230" /><output>230</output></label>
+        <label class="ctl"><span>游走速度</span><input id="speed" type="range" min="0" max="100" value="40" /><output>40</output></label>
+        <label class="ctl"><span>互作密度</span><input id="density" type="range" min="10" max="80" value="45" /><output>45%</output></label>
+        <label class="ctl"><span>促进占比</span><input id="promote" type="range" min="0" max="100" value="60" /><output>60%</output></label>
+        <label class="ctl"><span>作用强度</span><input id="strength" type="range" min="0" max="100" value="50" /><output>50</output></label>
       </div>
 
-      <div class="legend glass-panel" aria-label="图例">
-        <span><i class="legend-node normal"></i> 光点</span>
-        <span><i class="legend-node start"></i> 起点</span>
-        <span><i class="legend-node visited"></i> 已访问</span>
-        <span><i class="legend-line"></i> 路径</span>
+      <div class="row-btns">
+        <button class="btn primary" id="pause">暂停</button>
+        <button class="btn" id="regen">重新生成</button>
+        <button class="btn" id="theme" aria-label="切换深浅色">深色</button>
       </div>
 
-      <div class="metrics glass-panel" aria-live="polite">
-        <div><span>NODE</span><strong id="metricNodes">60</strong></div>
-        <div><span>EDGE</span><strong id="metricEdges">0</strong></div>
-        <div><span>FPS</span><strong id="metricFps">60</strong></div>
-      </div>
-    </section>
-  </main>
+      <dl class="stats">
+        <div><dt>节点</dt><dd id="sNodes">0</dd></div>
+        <div><dt>此刻作用</dt><dd id="sEdges">0</dd></div>
+        <div><dt class="pro">促进</dt><dd id="sPro">0</dd></div>
+        <div><dt class="inh">抑制</dt><dd id="sInh">0</dd></div>
+      </dl>
+
+      <ul class="legend">
+        <li><svg viewBox="0 0 44 12"><line x1="2" y1="6" x2="34" y2="6" class="lg-pro" /><path d="M42 6 L32 1.5 L32 10.5Z" class="lg-pro-fill" /></svg>促进（箭头）</li>
+        <li><svg viewBox="0 0 44 12"><line x1="2" y1="6" x2="38" y2="6" class="lg-inh" /><rect x="38" y="0.5" width="3" height="11" class="lg-inh-fill" /></svg>抑制（短横）</li>
+        <li><svg viewBox="0 0 44 12"><circle cx="8" cy="6" r="3" class="lg-node" /><circle cx="26" cy="6" r="5.5" class="lg-node" /></svg>圆的大小＝表达量</li>
+      </ul>
+      <p class="hint">点击节点查看详情；拖动节点可移动；空格暂停，R 重新生成。</p>
+    </div>
+  </aside>
+
+  <section class="inspector" id="inspector" hidden>
+    <header>
+      <h2 id="iName">节点</h2>
+      <button class="icon-btn" id="iClose" aria-label="关闭">×</button>
+    </header>
+    <canvas id="spark" height="56" aria-label="表达量随时间变化"></canvas>
+    <dl class="effects">
+      <div><dt>表达量</dt><dd id="iE">–</dd></div>
+      <div><dt>独立效应</dt><dd id="iIndep">–</dd></div>
+      <div><dt>依赖效应</dt><dd id="iDep">–</dd></div>
+    </dl>
+    <div class="io">
+      <div><h3>受谁作用</h3><ul id="iIn"></ul></div>
+      <div><h3>作用于谁</h3><ul id="iOut"></ul></div>
+    </div>
+    <div class="row-btns">
+      <button class="btn primary" id="aSpread">传播扰动</button>
+      <button class="btn" id="aKnock">敲除</button>
+      <button class="btn" id="aBoost">过表达</button>
+      <button class="btn" id="aPin">固定</button>
+    </div>
+  </section>
+
+  <p class="toast" id="toast" role="status" aria-live="polite"></p>
 
   <script src="./app.js"></script>
 </body>
