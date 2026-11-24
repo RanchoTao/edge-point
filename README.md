@@ -1,27 +1,29 @@
-# Edge Point
+# Edge Point · 布朗 idopNetwork
 
-一个纯前端的动态无向图 / 图算法可视化实验。
+布朗运动中的有向互作网络：节点随机游走，相遇时产生有方向的**促进**或**抑制**作用，表达量随之改变。纯前端，Canvas 2D，无依赖。
 
-- Canvas 2D 实时渲染
-- 自实现弹簧-斥力布局（无运行时依赖）
-- 节点拖影、发光、动态连线
-- 鼠标拖拽节点、悬停高亮邻居
-- BFS / DFS / Dijkstra 动画
-- 节点数、连边半径、运动速度、拖影强度实时调节
-- GitHub Pages 自动部署
+## 模型
+
+每个节点的表达量按 idopNetwork 的分解演化：
+
+```
+dE_i/dt = Q_i(E_i) + Σ_{j≠i} Q_{i←j}(E_j)
+          独立效应      依赖效应
+```
+
+- 独立效应：logistic 生长 `Q_i = g_i · E_i · (1 − E_i / K_i)`
+- 依赖效应：`Q_{i←j} = s · a_ij · E_j · (1 − d_ij / R)`，只在两点距离小于作用半径 `R` 时生效
+- `a_ij > 0` 为促进（朱红箭头），`a_ij < 0` 为抑制（虚线、末端短横）；互逆的作用画成两条弯向两侧的曲线
+
+## 交互
+
+- 点击节点：查看表达量曲线、独立效应、依赖效应、受谁作用、作用于谁
+- **传播扰动**：从选中节点出发，沿箭头方向逐层传播
+- **敲除 / 过表达**：改变一个节点，观察下游节点的变化
+- 拖动节点移动，**固定**后它不再游走
+- 面板滑块：节点数、作用半径、游走速度、互作密度、促进占比、作用强度
+- 浅色 / 深色两种主题；空格暂停，R 重新生成，Esc 取消选择
 
 ## 本地运行
 
-直接打开 `index.html` 即可；也可以在仓库目录运行任意静态服务器，例如：
-
-```bash
-python -m http.server 8000
-```
-
-然后访问 `http://localhost:8000`。
-
-## GitHub Pages
-
-仓库包含 `.github/workflows/pages.yml`。推送到 `main` 后会自动构建并部署静态站点。
-
-如首次部署提示 Pages 尚未启用，在 GitHub 仓库 **Settings → Pages → Build and deployment → Source** 中选择 **GitHub Actions**，然后重新运行 workflow。
+直接打开 `index.html`，或在仓库目录运行 `python -m http.server 8000` 后访问 `http://localhost:8000`。推送到 `main` 后由 GitHub Actions 部署到 GitHub Pages。
